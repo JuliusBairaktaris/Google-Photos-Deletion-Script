@@ -7,6 +7,7 @@
   const CONFIG = {
     actionDelay: 1000, // A brief, stable delay after clicking the final delete button.
     timeout: 30000, // Time in milliseconds to wait for an element before timing out.
+    stallLimit: 5, // The number of consecutive failed deletions before stopping.
     selectors: {
       checkbox: ".ckGgle[aria-checked=false]",
       photoContainer: "div[jsname='fPosBb']",
@@ -85,6 +86,7 @@
    */
   async function runPhotoDeleter() {
     let totalDeleted = 0;
+    let stallCounter = 0; // Counter for consecutive failed deletions.
 
     console.log(
       "%c--- Google Photos Deletion Script Initialized ---",
@@ -106,9 +108,10 @@
           () => document.querySelectorAll(CONFIG.selectors.checkbox),
           "any selectable photo"
         );
+        const photoCountBefore = checkBoxes.length; // Count photos before deletion.
 
         console.log(
-          `Found ${checkBoxes.length} visible photos. Selecting all...`
+          `Found ${photoCountBefore} visible photos. Selecting all...`
         );
         for (const box of checkBoxes) {
           try {
@@ -119,15 +122,62 @@
             );
           }
         }
-        totalDeleted += checkBoxes.length;
 
         await sleep(500); // Wait a moment for the selection UI to update.
         await executeDeletion();
+
+        // --- STALL DETECTION LOGIC ---
+        let photoCountAfter = 0;
+        try {
+          // Check for photos again to verify deletion was successful.
+          const checkBoxesAfter = await waitUntil(
+            () => document.querySelectorAll(CONFIG.selectors.checkbox),
+            "any selectable photo",
+            5000
+          );
+          photoCountAfter = checkBoxesAfter.length;
+        } catch (e) {
+          // If no photos are found, it means the batch was successfully deleted.
+          photoCountAfter = 0;
+        }
+
+        if (photoCountAfter >= photoCountBefore) {
+          stallCounter++;
+          console.warn(
+            `[WARNING] Deletion appears to have failed. Photo count did not decrease. Stall attempt ${stallCounter}/${CONFIG.stallLimit}.`
+          );
+          if (stallCounter >= CONFIG.stallLimit) {
+            // Throw an error to stop the script if the stall limit is reached.
+            throw new Error(
+              `Stall Detected. Google is likely rate-limiting you. The script will now stop.`
+            );
+          }
+        } else {
+          // If deletion was successful, reset the counter and update the total.
+          stallCounter = 0;
+          const newlyDeleted = photoCountBefore - photoCountAfter;
+          totalDeleted += newlyDeleted;
+          console.log(
+            `Successfully deleted a batch of ${newlyDeleted}. Total deleted so far: ${totalDeleted}`
+          );
+        }
       } catch (error) {
         // If waitUntil times out finding selectable photos, it means the page is empty.
-        console.log(
-          "Could not find any more photos after waiting. Mission accomplished!"
-        );
+        if (error.message.includes("any selectable photo")) {
+          console.log(
+            "Could not find any more photos after waiting. Mission accomplished!"
+          );
+        } else {
+          // This catches the stall error or any other unexpected errors.
+          console.error(
+            `%c[SCRIPT HALTED] ${error.message}`,
+            "color: #F44336; font-weight: bold; font-size: 14px;"
+          );
+          console.log(
+            "%cTo continue, manually refresh the page (F5) and run the script again.",
+            "color: #FFC107;"
+          );
+        }
         break; // Exit the loop.
       }
     }
